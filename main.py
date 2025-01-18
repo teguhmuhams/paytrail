@@ -7,6 +7,7 @@ import threading
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from helpers import decode_base64_gmail, extract_text_from_html, convert_to_jakarta_time
 
 # Scopes for Gmail and Sheets APIs
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',
@@ -80,40 +81,55 @@ def get_credentials():
 
     return flow.credentials
 
-def get_latest_email(creds):
+def get_latest_email(creds, query):
     # Build the Gmail API service
     service = build('gmail', 'v1', credentials=creds)
     
     # List the latest email from the inbox
-    results = service.users().messages().list(userId='me', maxResults=1, labelIds=['INBOX'], q="is:unread").execute()
+    results = service.users().messages().list(userId='me', labelIds=['INBOX'], q=query).execute()
     messages = results.get('messages', [])
 
     if not messages:
         print("📭 No unread messages found.")
         return
+    
+    decoded_emails = []
+    
+    for message in messages:   
+        # Fetch the full message details
+        message = service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+        
+        # Extract headers
+        headers = message['payload']['headers']
+        subject = sender = date = ''
+        
+        for header in headers:
+            if header['name'] == 'Subject':
+                subject = header['value']
+            if header['name'] == 'From':
+                sender = header['value']
+            if header['name'] == 'Date':
+                date = convert_to_jakarta_time(header['value'])
+        
+        # Extract email body
+        body = message['payload'].get('body', {}).get('data')        
+        decoded_body = decode_base64_gmail(body)
+        # decoded_body = extract_text_from_html(decoded_body)
+        
+        email_data = {
+            "from" : sender,
+            "subject": subject,
+            "date": date,
+            "body": decoded_body
+        }
+        
+        decoded_emails.append(email_data)
+        
+    # Write the result to a JSON file
+    with open('decoded_emails.json', 'w', encoding='utf-8') as json_file:
+        json.dump(decoded_emails, json_file, ensure_ascii=False, indent=4)
 
-    # Get the latest message ID
-    latest_message_id = messages[0]['id']
-    
-    # Fetch the full message details
-    message = service.users().messages().get(userId='me', id=latest_message_id, format='full').execute()
-    
-    # Extract headers
-    headers = message['payload']['headers']
-    subject = sender = ''
-    for header in headers:
-        if header['name'] == 'Subject':
-            subject = header['value']
-        if header['name'] == 'From':
-            sender = header['value']
-    
-    # Extract snippet
-    snippet = message.get('snippet', '')
-
-    print(f"📧 Latest Email:")
-    print(f"From: {sender}")
-    print(f"Subject: {subject}")
-    print(f"Snippet: {snippet}")
+    print("📄 Emails have been saved to 'decoded_emails.json'.")
 
 # Get credentials
 credentials = get_credentials()
@@ -121,4 +137,5 @@ print("✅ Authentication successful!")
 print(f"Access Token: {credentials.token}")
 
 # Call the function after authentication
-get_latest_email(credentials)
+query = 'from:noreply@ovo.co.id after:2025/01/15'
+get_latest_email(credentials, query)
